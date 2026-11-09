@@ -1,0 +1,902 @@
+---
+title: "Bulk RNA-seq: Hands-On Analysis"
+subtitle: "Human NK cells, GSE191074"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-fold: false
+    code-tools: true
+    code-overflow: wrap
+    fig-width: 7
+    fig-height: 4.5
+    embed-resources: true
+    theme: cosmo
+    grid:
+      body-width: 1100px
+execute:
+  warning: false
+  message: false
+editor: source
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup}
+#| include: false
+knitr::opts_chunk$set(comment = "#>", collapse = FALSE)
+```
+
+## Before you start {.unnumbered}
+
+### How to run this document
+
+Each grey block below is a **chunk**. Click the green ▶ at its top-right
+to run it. Output appears directly underneath.
+
+::: callout-important
+## Three things that will save you
+
+**Run chunks in order, from the top.** Later ones use objects the earlier
+ones create.
+
+**If you lose your place**, put the cursor in the first chunk and use
+**Run → Run All Chunks Below**. Faster than hunting for where you were.
+
+**If a chunk does nothing when you click ▶**, look at the Console. If the
+prompt is `+` rather than `>`, press Esc. If that is not it, switch the
+editor from Visual to Source using the toggle above this pane.
+:::
+
+Everything here starts from a count matrix that `nf-core/rnaseq` has
+already produced. Nothing here aligns reads.
+
+You need these packages. In the workshop environment they are already
+installed.
+
+```{r packages}
+library(DESeq2)     # the analysis
+library(ggplot2)    # plots
+library(dplyr)      # handling tables
+library(stringr)    # handling text
+library(tidyr)      # reshaping tables
+library(GEOquery)   # only needed if the data has to be downloaded
+```
+
+::: callout-note
+## Three tools, pick one
+
+You will see **DESeq2**, **edgeR** and **limma** in papers doing the same
+job. They are alternatives, not a pipeline: each takes counts and returns
+a ranked list of genes, and they agree on most of them.
+
+This document uses **DESeq2** throughout. `edgeR` appears exactly once
+below, for a normalization helper, and is called as `edgeR::cpm()` rather
+than loaded, so it is obvious where it is being used.
+
+If you have inherited a script that loads all three, that is usually
+history rather than necessity.
+:::
+
+### The experiment
+
+Human NK cells from healthy donors, split into five arms, three biological
+replicates each.
+
+| Arm | What was in the well | Why it is there |
+|---|---|---|
+| `NK-only` | NK cells alone | Baseline |
+| `NK-PGE2` | + prostaglandin E2 | Does the soluble factor alone suppress NK cells? |
+| `NK-K562` | + K562, a leukemia line | Positive control: does the NK response work at all? |
+| `NK-Blasts` | + primary AML blasts | Do AML blasts activate NK cells? |
+| `NK-Blasts-K562` | + both | Can blasts suppress a response that normally works? |
+
+Fifteen samples, public, GEO accession GSE191074. The five arms are not a
+list of treatments; each one answers a specific question, and the last is
+the key experiment.
+
+------------------------------------------------------------------------
+
+# Setting up
+
+## Load the counts
+
+The chunk below looks for the count table in several likely places, and
+downloads it from GEO if it finds none of them. If you put the file
+somewhere else, add your path to `candidates`.
+
+```{r load-counts}
+candidates <- c(
+  "data/GSE191074_CountTable.txt.gz",
+  "GSE191074/GSE191074_CountTable.txt.gz",
+  "GSE191074_CountTable.txt.gz",
+  "data_prep/GSE191074/GSE191074_CountTable.txt.gz",
+  "../GSE191074/GSE191074_CountTable.txt.gz",
+  "../data_prep/GSE191074/GSE191074_CountTable.txt.gz"
+)
+
+count_file <- candidates[file.exists(candidates)][1]
+
+if (is.na(count_file)) {
+  message("Count table not found locally. Downloading from GEO...")
+  files <- GEOquery::getGEOSuppFiles("GSE191074", makeDirectory = TRUE)
+  count_file <- grep("CountTable", rownames(files), value = TRUE)[1]
+}
+
+message("Reading: ", normalizePath(count_file))
+
+counts <- read.delim(count_file, row.names = 1, check.names = FALSE)
+counts <- as.matrix(counts)
+
+dim(counts)
+```
+
+::: callout-tip
+## If the chunk above fails
+
+Run `getwd()` in the console while the document is open. That is where
+chunks run from. Either move the count table into one of the folders
+listed above, or add your own path to `candidates`.
+:::
+
+35,598 genes down the side, 15 samples across the top. The top-left
+corner:
+
+```{r peek}
+counts[1:5, 1:4]
+```
+
+Every number is a raw read count. Not expression, not normalized, not a
+fold change.
+
+## Build the sample table
+
+The model needs to know which sample is which. Condition and replicate
+are both encoded in the column names, so they can be pulled out rather
+than typed by hand.
+
+A sample is named like `NK-PGE2-BR1.fastq`. Removing the `-BR1.fastq`
+ending leaves the condition; pulling out the `BR1` part gives the
+replicate.
+
+```{r sample-table}
+design_df <- tibble(sample = colnames(counts)) |>
+  mutate(
+    # drop the "-BR1.fastq" ending, leaving the condition
+    condition = str_remove(sample, "-BR[0-9]+\\.fastq$"),
+    # pull out just the BR number
+    replicate = str_extract(sample, "BR[0-9]+")
+  ) |>
+  mutate(
+    condition = factor(condition,
+                       levels = c("NK-only", "NK-PGE2", "NK-K562",
+                                  "NK-Blasts", "NK-Blasts-K562")),
+    replicate = factor(replicate)
+  )
+
+design_df
+```
+
+`mutate()` adds a column. It will come up again whenever a table needs a
+new column computed from the ones already there.
+
+::: callout-important
+## Check this table every single time
+
+The count matrix and the sample table are two separate objects. Nothing
+stops them being lined up wrong, and if they are, the groups are silently
+swapped and every result below is wrong.
+
+Run the next chunk to confirm the order matches before going further.
+:::
+
+```{r check-order}
+identical(colnames(counts), as.character(design_df$sample))
+```
+
+```{r design-table}
+table(design_df$condition, design_df$replicate)
+```
+
+One sample in every cell. This is the design grid from the slides, filled
+in: every condition appears once in every replicate batch, which is what
+makes the batch effect separable from the treatment effect.
+
+------------------------------------------------------------------------
+
+# Checking the samples
+
+Before testing anything, confirm the samples are what the labels say and
+contain only the cells they should.
+
+Both checks are plots of a handful of genes. No special software.
+
+## Sequencing depth
+
+```{r lib-sizes}
+lib <- tibble(sample   = design_df$sample,
+              millions = colSums(counts) / 1e6)
+
+ggplot(lib, aes(x = sample, y = millions)) +
+  geom_col(fill = "grey40") +
+  labs(x = NULL, y = "Library size (millions)") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The libraries differ, which is normal, and it is why raw counts cannot be
+compared directly.
+
+## Normalize for looking at
+
+```{r lcpm}
+# the one place edgeR is used: its cpm() is a convenient way to get
+# normalized log counts for plotting. DESeq2 does everything else.
+dge  <- edgeR::DGEList(counts)
+dge  <- edgeR::calcNormFactors(dge)      # the composition correction
+lcpm <- edgeR::cpm(dge, log = TRUE, prior.count = 2)
+```
+
+`calcNormFactors()` is edgeR's version of the composition correction —
+the same job DESeq2's size factors do later.
+
+`prior.count = 2` adds a small constant before logging, so genes with zero
+counts give a finite number instead of negative infinity.
+
+::: callout-important
+## Two objects, two purposes
+
+`lcpm` is normalized and logged, and is used **only for plotting** in this
+section.
+
+`counts` stays raw, and is what goes into DESeq2 later. Keep them
+straight — handing `lcpm` to DESeq2 would silently produce wrong results.
+:::
+
+::: callout-important
+## Do not filter before a contamination check
+
+Filtering removes genes that are lowly expressed, which is exactly what
+contaminant genes look like. Filter first and the evidence is gone, and
+the samples look clean.
+
+Note this used the **unfiltered** matrix.
+:::
+
+## Why we log
+
+Same data, same normalization, two scales. One box per sample.
+
+```{r log-transform}
+cpm_raw <- edgeR::cpm(dge)      # normalized, but not logged
+
+bind_rows(
+  as_tibble(cpm_raw) |>
+    pivot_longer(everything(), names_to = "sample", values_to = "value") |>
+    mutate(scale = "Raw CPM"),
+  as_tibble(lcpm) |>
+    pivot_longer(everything(), names_to = "sample", values_to = "value") |>
+    mutate(scale = "log2 CPM")
+) |>
+  mutate(scale = factor(scale, levels = c("Raw CPM", "log2 CPM"))) |>
+  ggplot(aes(x = sample, y = value)) +
+  geom_boxplot(fill = "grey90", outlier.size = 0.3, outlier.alpha = 0.2) +
+  facet_wrap(~ scale, scales = "free_y", ncol = 1) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+```
+
+The top panel is why we log. Expression spans several orders of
+magnitude: most genes sit near zero while a handful run into the
+thousands, so every box is squashed flat against the bottom and the plot
+tells you nothing.
+
+The bottom panel is the same numbers on a log scale. Now the boxes have
+visible spread and the samples can be compared.
+
+This is also a QC plot in its own right: the boxes should line up across
+samples. One sitting noticeably higher or lower than the rest had
+something go wrong in library prep.
+
+::: callout-warning
+This is for **looking at**, not for testing. DESeq2 gets raw counts.
+:::
+
+## Where do the samples sit relative to each other?
+
+Principal component analysis reduces 35,000 genes to a couple of axes
+that capture most of the variation. It is the fastest way to spot an
+outlier, a batch effect, or samples that are not where you expect.
+
+```{r pca}
+# use the 500 most variable genes - the ones carrying the structure
+top_var <- lcpm[order(apply(lcpm, 1, var), decreasing = TRUE)[1:500], ]
+
+pca <- prcomp(t(top_var))
+pct <- round(100 * pca$sdev^2 / sum(pca$sdev^2))
+
+pca_df <- as_tibble(pca$x[, 1:2]) |>
+  mutate(condition = design_df$condition,
+         replicate = design_df$replicate)
+
+ggplot(pca_df, aes(x = PC1, y = PC2, colour = condition, shape = replicate)) +
+  geom_point(size = 4) +
+  labs(x = paste0("PC1: ", pct[1], "% of variance"),
+       y = paste0("PC2: ", pct[2], "% of variance")) +
+  theme_minimal(base_size = 12)
+```
+
+Two things to look for. Do samples group by **condition**, which is what
+you hope? Or do they group by **replicate**, which would mean batch
+dominates biology? And is any single sample sitting far away from
+everything else?
+
+## A helper for marker panels
+
+```{r score-fn}
+score_panel <- function(genes, mat) {
+  present <- intersect(genes, rownames(mat))
+  if (length(present) == 0) return(rep(NA_real_, ncol(mat)))
+  colMeans(mat[present, , drop = FALSE])
+}
+```
+
+Averaging several markers is more robust than trusting one gene.
+
+## Check 1: do the sex genes agree?
+
+`XIST` is expressed from the inactive X, so it is high in female samples
+and near zero in male ones. Y-linked genes are the reverse.
+
+```{r sex-check}
+y_genes <- c("RPS4Y1", "UTY", "KDM5D", "DDX3Y", "EIF1AY", "USP9Y")
+
+sex <- tibble(
+  sample  = colnames(lcpm),
+  xist    = score_panel("XIST", lcpm),
+  y_score = score_panel(y_genes, lcpm)
+)
+
+ggplot(sex, aes(x = xist, y = y_score)) +
+  geom_point(size = 3, colour = "grey30") +
+  expand_limits(x = c(-1, 8), y = c(0, 8)) +
+  annotate("text", x = 6, y = 1, label = "female samples\nwould sit here",
+           colour = "#C00000", size = 4) +
+  labs(x = "XIST (log2 CPM)", y = "Y-gene score (log2 CPM)") +
+  theme_minimal(base_size = 12)
+```
+
+Every sample sits bottom-right: no XIST, plenty of Y. All 15 are male and
+they agree with each other.
+
+```{r sex-raw}
+counts[c("XIST", "RPS4Y1", "DDX3Y"), 1:6]
+```
+
+XIST is 0 to 2 reads, `RPS4Y1` around a thousand. Not ambiguous.
+
+::: callout-note
+## Why this works without any metadata
+
+This is an **internal consistency** check. Even with no recorded sex
+anywhere, samples should form two tight clusters with nothing in between.
+
+With recorded sex you get a second, stronger check: does the data agree
+with the records? A disagreement means a sample was swapped somewhere
+between the bench and the sequencer.
+
+**A point in the middle** usually means two samples were mixed.
+
+Worth recording donor sex in your sample sheet for exactly this reason.
+It costs nothing and gives a free integrity check on every experiment.
+:::
+
+## Check 2: is anything else in these samples?
+
+These were sorted after co-culture. Sorting is good, not perfect.
+
+Blood carryover is the usual worry in any primary cell prep, so start
+there: red blood cell genes should be absent from a pure lymphocyte
+population.
+
+```{r panels}
+panels <- list(
+  nk        = c("NCAM1", "KLRD1", "KLRF1", "NCR1", "NKG7", "GNLY", "PRF1"),
+  t_cell    = c("TRAC"),
+  monocyte  = c("CD14", "LYZ", "S100A8", "S100A9", "VCAN", "FCN1"),
+  b_cell    = c("MS4A1", "CD79A"),
+  erythroid = c("HBG1", "HBG2", "HBZ", "GATA1", "GYPA", "KLF1"),
+  platelet  = c("PPBP", "PF4")
+)
+
+scores <- as_tibble(lapply(panels, score_panel, mat = lcpm)) |>
+  mutate(sample    = colnames(lcpm),
+         condition = design_df$condition)
+```
+
+::: callout-tip
+## Choose markers the other cell type cannot fake
+
+`CD2` would be a bad T-cell marker here, because NK cells express it too.
+`TRAC` is a good one: NK cells do not rearrange a T-cell receptor, so any
+signal is genuine carryover.
+
+The same logic applies to every panel. Pick genes your cells cannot
+possibly make.
+:::
+
+First, confirm these are NK cells at all:
+
+```{r nk-confirm}
+round(range(scores$nk), 1)
+```
+
+NK markers are high in every sample, as they should be.
+
+**Before running the next chunk, predict what you expect** from the other
+panels. These were all sorted NK cells.
+
+```{r contamination}
+scores |>
+  pivot_longer(cols = all_of(setdiff(names(panels), "nk")),
+               names_to = "panel", values_to = "score") |>
+  ggplot(aes(x = condition, y = score)) +
+  geom_point(size = 2.5, colour = "grey30") +
+  facet_wrap(~ panel, nrow = 1) +
+  labs(x = NULL, y = "Marker score (mean log2 CPM)") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+```
+
+All five panels share a y-axis, so the one that moves is the one worth
+looking at. Four sit flat near background. The erythroid panel does not.
+
+```{r ery-by-cond}
+scores |>
+  group_by(condition) |>
+  summarise(erythroid = round(mean(erythroid), 2))
+```
+
+Around 1.9 in `NK-only`, `NK-PGE2` and `NK-Blasts`; around 4.4 in the two
+arms that had K562 added. Roughly eight-fold, in exactly the arms where a
+second cell type was in the well.
+
+NK cells are lymphocytes and do not make hemoglobin. This is RNA from
+target cells that survived sorting.
+
+## Which hemoglobin tells you the source
+
+The check started as a search for blood carryover. The pattern says it is
+not blood.
+
+```{r hb-raw}
+counts[c("HBG2", "HBZ", "HBG1", "HBB"),
+       c("NK-only-BR1.fastq", "NK-only-BR2.fastq",
+         "NK-K562-BR1.fastq", "NK-K562-BR2.fastq")]
+```
+
+Humans make different globins at different life stages:
+
+| Gene | Stage |
+|---|---|
+| `HBZ` | Embryonic (zeta) |
+| `HBG1`, `HBG2` | Fetal (gamma) |
+| `HBB` | Adult (beta) |
+
+Fetal and embryonic globin go up roughly twenty-fold. Adult globin does
+not move.
+
+Blood carryover would look the opposite: adult globin dominant,
+embryonic silent. K562 is an erythroleukemia line arrested at a fetal
+stage, making gamma and zeta globin and almost no beta.
+
+::: callout-important
+## The transferable part
+
+The marker pattern identified the contaminating cell type, not just its
+presence. Picking genes that differ between the candidate sources turns a
+yes/no check into an answer.
+:::
+
+We will come back to whether any of this changes the results.
+
+------------------------------------------------------------------------
+
+# A first comparison
+
+The simplest comparison in the dataset: **NK + PGE2 versus NK alone**.
+Neither arm had K562 in it, so the carryover found above is not involved.
+
+## Set up the model
+
+```{r dds}
+dds <- DESeqDataSetFromMatrix(
+  countData = counts,
+  colData   = design_df,
+  design    = ~ replicate + condition
+)
+```
+
+Three things go in: the raw counts, the sample table, and the formula.
+
+Reading `~ replicate + condition` right to left: compare the conditions,
+after accounting for differences between replicate batches.
+
+::: callout-note
+## Why the variable of interest goes last
+
+The model fit is identical whichever order you write the terms in. What
+changes is the default: `results()` with no arguments returns a
+comparison for the **last** variable in the formula.
+
+Put `condition` last and the default is what you want.
+:::
+
+## Filter low-count genes
+
+```{r filter}
+keep <- rowSums(counts(dds) >= 10) >= 3
+table(keep)
+
+dds <- dds[keep, ]
+```
+
+A gene needs at least 10 reads in at least 3 samples. The thresholds are
+conventional rather than magic: 10 reads is roughly where a count starts
+carrying usable information, and 3 matches the smallest group size, so a
+gene expressed in only one condition still survives.
+
+Genes below the cutoff carry no usable signal, and testing them costs
+power through multiple-testing correction.
+
+This is where filtering belongs — after the contamination check, not
+before.
+
+## Run it
+
+```{r run-deseq}
+dds <- DESeq(dds)
+```
+
+The messages describe real steps. `estimating size factors` is the
+composition correction. `gene-wise dispersion estimates` followed by
+`final dispersion estimates` is the borrowing-across-genes step.
+
+```{r dispersion}
+plotDispEsts(dds)
+```
+
+The plot from the slides: each dot is a gene, black for its own noisy
+estimate, blue for the final value after being pulled toward the red
+trend. The genes strung along the bottom had replicates that landed
+almost identically by chance; shrinkage pulls them up to something
+plausible.
+
+## Results
+
+```{r res-pge2}
+res_pge2 <- results(dds, contrast = c("condition", "NK-PGE2", "NK-only"))
+
+sum(res_pge2$padj < 0.05, na.rm = TRUE)
+```
+
+```{r top-pge2}
+as.data.frame(res_pge2) |>
+  tibble::rownames_to_column("gene") |>
+  filter(!is.na(padj)) |>
+  arrange(padj) |>
+  select(gene, baseMean, log2FoldChange, padj) |>
+  head(10)
+```
+
+`results()` returns a `DESeqResults` object rather than a data frame, so
+`as.data.frame()` comes first. `filter()` keeps rows, `arrange()` sorts,
+`select()` picks columns.
+
+::: callout-note
+## One model, many comparisons
+
+`DESeq()` fits the model once. `results()` then forms a particular
+contrast from the stored coefficients, computes its p-values, and applies
+its own filtering and multiple-testing correction.
+
+So you can pull any comparison out of the same fit:
+
+```r
+results(dds, contrast = c("condition", "NK-K562",   "NK-only"))
+results(dds, contrast = c("condition", "NK-Blasts", "NK-only"))
+```
+
+Each one gets its own `padj`, corrected independently.
+:::
+
+::: callout-note
+## Why not analyze two conditions at a time?
+
+It is tempting to subset to the two arms you care about and fit a smaller
+model. That throws away information.
+
+With all 15 samples and `~ replicate + condition`, the model fits 7
+coefficients, leaving **8 residual degrees of freedom** to estimate each
+gene's dispersion. Subset to 6 samples and you have **2**.
+
+Dispersion is what the p-values hinge on, so that is a real loss of power.
+
+The joint model assumes dispersion is similar across conditions. If one
+group is far more variable than the rest — patient-derived material is
+the usual case — that assumption breaks and splitting is justified.
+:::
+
+::: callout-note
+## Why some genes have `padj = NA`
+
+DESeq2 filters out genes too lowly expressed to reach significance, so
+they are excluded from the multiple-testing correction rather than
+counted against it. Those get `padj = NA`. It is not an error, and it
+increases power for everything else.
+:::
+
+## Does the answer make sense?
+
+Third in the list is **CREM**, the cAMP response element modulator.
+
+PGE2 signals by raising cyclic AMP inside the cell, and CREM is the
+transcription factor that responds to cyclic AMP. CREM is also the
+central finding of the paper this dataset comes from — NK cells exposed
+to AML blasts show raised CREM, which is how the authors identified the
+PGE2 pathway.
+
+Nothing told the software to look for it.
+
+```{r crem}
+match("CREM", rownames(res_pge2[order(res_pge2$padj), ]))
+```
+
+`RGS2` and `DUSP2` in the top six sit on the same signaling axis.
+
+::: callout-tip
+## Build this habit
+
+Before trusting a result, check whether something already known shows up
+where it should. If nothing recognizable appears near the top, treat that
+as a warning rather than a discovery.
+:::
+
+## The p-value histogram
+
+```{r pval-hist}
+hist(res_pge2$pvalue, breaks = 50, col = "grey80", border = "white",
+     main = "NK-PGE2 vs NK-only", xlab = "raw p-value")
+```
+
+Plot the **raw** p-values, not the adjusted ones. Genes that did not
+change produce p-values spread evenly between 0 and 1; genes that did
+pile up near zero. So the healthy shape is flat with a spike at the left,
+which is what this is.
+
+| Shape | What it means |
+|---|---|
+| Flat, spike at 0 | Healthy |
+| Flat, no spike | Nothing detected |
+| Hill in the middle | Model is wrong, often a missing covariate |
+| Spike at 1 | Over-conservative filtering |
+
+The hill is the one to watch for. It is the clearest signal that something
+systematic has not been modelled.
+
+## MA plot
+
+```{r ma-plot}
+# DESeq2:: spelled out: limma also has a plotMA, and if limma is loaded
+# it masks this one and silently plots something else
+DESeq2::plotMA(res_pge2, ylim = c(-4, 4))
+```
+
+Mean expression across the bottom on a log scale, fold change up the
+side, significant genes in blue. The funnel on the left is the point: at
+low counts, fold changes scatter wildly because they rest on very few
+reads.
+
+::: callout-note
+## Shrinking fold changes
+
+`lfcShrink()` pulls unreliable fold changes toward zero while leaving
+well-supported ones alone:
+
+```r
+res_shrunk <- lfcShrink(dds, coef = "condition_NK.PGE2_vs_NK.only",
+                        type = "apeglm")
+```
+
+It does not change p-values, only the effect size estimate. Worth using
+whenever you rank genes by fold change, or the top of your list will be
+low-count noise.
+:::
+
+## Volcano
+
+```{r volcano-pge2}
+volc <- as.data.frame(res_pge2) |>
+  tibble::rownames_to_column("gene") |>
+  filter(!is.na(padj)) |>
+  mutate(sig = padj < 0.05)
+
+# the ten most significant genes, to label
+top10 <- volc |> arrange(padj) |> head(10)
+
+ggplot(volc, aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(colour = sig), alpha = 0.6, size = 1) +
+  ggrepel::geom_text_repel(data = top10, aes(label = gene),
+                           size = 3.5, min.segment.length = 0,
+                           max.overlaps = Inf, seed = 1) +
+  scale_colour_manual(values = c("FALSE" = "grey80", "TRUE" = "steelblue"),
+                      guide = "none") +
+  labs(x = "log2 fold change", y = "-log10 adjusted p") +
+  theme_minimal(base_size = 12)
+```
+
+Labelling the top genes turns the plot from a shape into a result. CREM,
+RGS2 and DUSP2 are all visible near the top.
+
+------------------------------------------------------------------------
+
+# Does the contamination matter?
+
+Checking the samples found K562 carryover in two arms. This is the comparison that
+involves one of them.
+
+```{r res-k562}
+res_k562 <- results(dds, contrast = c("condition", "NK-K562", "NK-only"))
+
+sum(res_k562$padj < 0.05, na.rm = TRUE)
+```
+
+```{r top-k562}
+as.data.frame(res_k562) |>
+  tibble::rownames_to_column("gene") |>
+  filter(!is.na(padj)) |>
+  arrange(padj) |>
+  select(gene, log2FoldChange, padj) |>
+  head(10)
+```
+
+`IFNG` is interferon gamma, `TNF` tumor necrosis factor, `CCL3` and
+`XCL1` chemokines, `FASLG` kills target cells, and the `NR4A` and `EGR`
+families are immediate-early activation genes. This is what an NK cell
+does on meeting a target it recognizes.
+
+## Where did the carryover genes end up?
+
+```{r passenger-ranks}
+k562_genes <- c("HBG1", "HBG2", "HBZ", "HBA1", "HBA2", "HBB",
+                "GATA1", "GYPA", "GYPB", "KLF1")
+
+as.data.frame(res_k562) |>
+  tibble::rownames_to_column("gene") |>
+  filter(!is.na(padj)) |>
+  arrange(padj) |>
+  mutate(rank = row_number()) |>
+  filter(gene %in% k562_genes) |>
+  select(gene, rank, log2FoldChange, padj)
+```
+
+Significant, with large fold changes, but the best rank is around 115 out
+of 11,500. Present, real, and well below the biology.
+
+Note `HBB` near the bottom — adult globin, the one K562 does not make.
+
+The same genes in the PGE2 comparison, where no K562 was present:
+
+```{r negative-control}
+as.data.frame(res_pge2) |>
+  tibble::rownames_to_column("gene") |>
+  filter(gene %in% k562_genes) |>
+  select(gene, log2FoldChange, padj) |>
+  arrange(padj)
+```
+
+Nothing significant. The signal appears only where K562 was in the well.
+
+::: callout-note
+## What this does and does not tell you
+
+The contamination is real and it did not change the headline. That is the
+useful version of the lesson: contamination does not automatically ruin
+an experiment, but you only know whether it did by looking.
+
+It would still mislead anyone reading down the gene list without the QC —
+"NK cells upregulate fetal hemoglobin on target contact" is there to be
+found.
+:::
+
+::: callout-note
+## Could you adjust for it as a covariate?
+
+Only if the contamination varies **within** a condition.
+
+Here it does not: the erythroid score correlates 0.93 with condition,
+because only the K562 arms have any. Putting both in the model asks it to
+separate two things that move together, which removes the effect you are
+measuring.
+
+In experiments where some wells came out dirtier than others, the score
+carries information the condition label does not, and a covariate helps.
+That is the common case in co-culture work.
+:::
+
+------------------------------------------------------------------------
+
+# Was the design worth it?
+
+`~ replicate + condition` has been used throughout without justification.
+Test it by fitting the same data without the replicate term.
+
+```{r block-test}
+# this refits the whole model, so it takes about 30 seconds
+dds_nb <- DESeqDataSetFromMatrix(counts[keep, ], design_df, ~ condition)
+dds_nb <- DESeq(dds_nb)
+res_nb <- results(dds_nb, contrast = c("condition", "NK-PGE2", "NK-only"))
+
+c(blocked   = sum(res_pge2$padj < 0.05, na.rm = TRUE),
+  unblocked = sum(res_nb$padj   < 0.05, na.rm = TRUE))
+```
+
+About 1,176 significant genes with the block, 939 without. Roughly 25%
+more, from one word in the formula, on identical data.
+
+Blocking removes consistent replicate-to-replicate differences from the
+noise estimate, so real effects stand out. It is the cheapest improvement
+available in the whole analysis — and it only works because the
+experiment was designed with every condition present in every batch.
+
+The design decision made at the bench is what made it possible.
+
+------------------------------------------------------------------------
+
+# Takeaways {.unnumbered}
+
+1.  **Counts in, not TPM.** The size of a count is information the model
+    needs.
+2.  **Check samples before results.** Sex genes and cell-type markers take
+    five minutes.
+3.  **Do not filter before a contamination check.** Filtering removes the
+    evidence.
+4.  **Tell the model the design.** One word gave 25% more power here.
+5.  **Check known biology appears.** CREM was the positive control and it
+    turned up unprompted.
+6.  **Find contamination, then judge it.** Present is not the same as
+    fatal.
+
+# Where to learn more {.unnumbered}
+
+-   DESeq2 vignette — <https://bioconductor.org/packages/DESeq2>
+-   edgeR user guide — <https://bioconductor.org/packages/edgeR>
+-   RNAseq123 workflow — <https://bioconductor.org/packages/RNAseq123>
+-   Design matrices guide — <https://f1000research.com/articles/9-1444>
+-   nf-core/rnaseq docs — <https://nf-co.re/rnaseq>
+-   Bioconductor support — <https://support.bioconductor.org>
+
+Everything here runs on a laptop, and the repository has the data and the
+code. The fastest way to learn this is to run it again on a dataset you
+care about.
+
+# Data credit {.unnumbered}
+
+Data from GEO accession GSE191074, generated and deposited by the authors
+of:
+
+> Rothfuß C, Baumann T, Donakonda S, et al. Two-layered immune escape in
+> AML is overcome by Fcγ receptor activation and inhibition of PGE2
+> signaling in NK cells. *Blood* 2025;145(13):1395–1406.
+> doi:10.1182/blood.2024025706
+
+The contamination described here is a normal technical feature of
+co-culture experiments, not a criticism of that work.
+
+```{r session-info}
+sessionInfo()
+```

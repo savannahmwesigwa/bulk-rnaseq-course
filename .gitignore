@@ -1,0 +1,35 @@
+# R session files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# Saved R objects - these get large and git keeps every version
+*.RData
+*.rda
+*.rds
+
+# Quarto / knitr build artifacts
+*_cache/
+*_files/
+/.quarto/
+
+# Rendered HTML at the repo root. The published copy lives in docs/
+# and IS tracked - that is what GitHub Pages serves.
+/*.html
+
+# Generated figures - regenerate with 05_make_figures.R
+figures/
+
+# GEO downloads that are not the course data
+GSE*/
+!data/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Working files
+scratch/
+tmp/
