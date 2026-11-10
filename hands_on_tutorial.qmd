@@ -697,9 +697,21 @@ DESeq2::plotMA(res_pge2, ylim = c(-4, 4))
 ```
 
 Mean expression across the bottom on a log scale, fold change up the
-side, significant genes in blue. The funnel on the left is the point: at
-low counts, fold changes scatter wildly because they rest on very few
-reads.
+side, significant genes in blue.
+
+Three things to check:
+
+**Is the cloud centred on zero?** This is the main one. If the bulk of
+genes sits visibly above or below the line, normalization has not worked
+and the samples are not on a common scale.
+
+**Is there a funnel at the left?** Expected, and the reason not to trust
+fold changes of low-count genes. Its absence would be stranger than its
+presence.
+
+**Where do the significant genes sit?** Spread across the expression
+range is healthier than all of them crammed at the low end, where the
+measurements are least reliable.
 
 ::: callout-note
 ## Shrinking fold changes
