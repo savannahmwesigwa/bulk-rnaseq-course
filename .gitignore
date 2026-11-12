@@ -3,7 +3,6 @@
 .Rhistory
 .RData
 .Ruserdata
-*.Rproj
 
 # Saved R objects - these get large and git keeps every version
 *.RData

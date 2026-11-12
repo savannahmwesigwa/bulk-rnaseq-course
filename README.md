@@ -54,10 +54,15 @@ anything during the course.
 SETUP.md                Installation instructions.
 hands_on_tutorial.qmd   The practical. Run top to bottom.
 hands_on_tutorial.R     The same code as a plain R script, if you prefer.
-data/                   Count table from GEO.
+GLOSSARY.md             Terms used in the course, in plain language.
+FAQ.md                  Questions that come up, with answers.
+data/                   Count table and sample sheet.
 slides/                 Theory presentation, plus an appendix of reference material.
 docs/                   The practical rendered as a web page.
 ```
+
+**[GLOSSARY.md](GLOSSARY.md)** is worth skimming before the session —
+the vocabulary lands better the second time you see it.
 
 ---
 
