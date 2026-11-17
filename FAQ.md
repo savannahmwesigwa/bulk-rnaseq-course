@@ -162,6 +162,28 @@ at a level you could detect at the bench, whether it sits in a pathway
 with other hits, and prior biology. A gene ranked 400th that fits a
 coherent story often matters more than the top hit.
 
+**Why did the course run those two comparisons and not the others?**
+
+The dataset has five arms, so there are plenty of comparisons available.
+The course runs `NK-PGE2 vs NK-only` and `NK-K562 vs NK-only` because one
+is unaffected by the K562 carryover and the other is affected by it,
+which is what the contamination section needs.
+
+That is a teaching choice, not a reproduction of the paper. The paper's
+own key RNA-seq comparison is `NK-Blasts vs NK-only` — "NK cells exposed
+to AML blasts" is where their CREM result came from — and its central
+functional question is `NK-Blasts-K562 vs NK-K562`: does prior exposure
+to blasts blunt the response to a target that normally works?
+
+That last one is worth noticing for a reason beyond this dataset. **Both**
+arms contain K562, so the target-cell carryover sits on both sides of the
+comparison and largely cancels out. The same artifact that shows up
+clearly in `NK-K562 vs NK-only` is much less of a problem here.
+
+Which is the general point: contamination is not simply present or
+absent in an experiment. How much it matters depends on which comparison
+you are making, because anything shared by both arms subtracts away.
+
 ---
 
 ## Tools and next steps
