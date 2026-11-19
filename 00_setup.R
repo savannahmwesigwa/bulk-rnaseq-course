@@ -56,25 +56,22 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) {
 
 # ---- 4. Install everything we need -------------------------------------------
 
+# Only what the practical actually uses. Nothing here installs from source
+# on a Mac, which is what makes Xcode command line tools necessary.
+
 cran_pkgs <- c(
   "ggplot2",      # plotting
   "dplyr",        # handling tables
   "stringr",      # handling text
   "tidyr",        # reshaping tables
-  "ggrepel",      # non-overlapping labels on plots
-  "pheatmap",     # heatmaps
-  "gridExtra",    # arranging plots
-  "RColorBrewer"  # color palettes
+  "ggrepel"       # non-overlapping labels on the volcano plot
 )
 
 bioc_pkgs <- c(
   "DESeq2",       # differential expression - the main tool
   "edgeR",        # used for one normalization step
   "limma",        # comes with edgeR; not used directly
-  "apeglm",       # shrinking fold changes
-  "GEOquery",     # downloading data from GEO
-  "AnnotationDbi",# gene ID conversion
-  "org.Hs.eg.db"  # human gene annotation
+  "apeglm"        # shrinking fold changes
 )
 
 missing_cran <- cran_pkgs[!cran_pkgs %in% rownames(installed.packages())]

@@ -55,9 +55,10 @@ end up with a folder containing `00_setup.R` and a `data` folder.
 
 ## Step 4 — Run the setup script
 
-1. Open **RStudio**
-2. **File → Open File…** and choose `00_setup.R` from the folder you just
-   unzipped
+1. In the unzipped folder, **double-click `bulk-rnaseq-course.Rproj`**.
+   RStudio opens with the project loaded, which puts it in the right
+   folder — this matters later, when the code looks for the data.
+2. In the **Files** pane (bottom right), click `00_setup.R`
 3. Click **Source** (top right of the editor pane), or press
    **Ctrl+Shift+S** (**Cmd+Shift+S** on Mac)
 4. Wait. It will print a lot of text. The first run takes 10–20 minutes.
@@ -98,12 +99,14 @@ it often works second time. If not, send us the output.
 Right-click the installer → Open → Open. Or System Settings → Privacy &
 Security → "Open Anyway".
 
-**Mac: errors mentioning `gfortran` or `clang`**
-You need Xcode command line tools. Open Terminal and run:
+**Mac: "No developer tools were found", or errors mentioning `gfortran`,
+`clang` or `make`**
+A package tried to build from source, which needs Apple's command line
+tools. Open Terminal and run:
 ```
 xcode-select --install
 ```
-Then run the setup script again.
+Accept the dialog, wait for it to finish, then run the setup script again.
 
 **It has been running for 40 minutes**
 That can be normal on a slow connection — the Bioconductor packages are

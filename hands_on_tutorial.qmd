@@ -63,7 +63,7 @@ library(ggplot2)    # plots
 library(dplyr)      # handling tables
 library(stringr)    # handling text
 library(tidyr)      # reshaping tables
-library(GEOquery)   # only needed if the data has to be downloaded
+library(ggrepel)    # labels that do not overlap, for the volcano plot
 ```
 
 ::: callout-note
